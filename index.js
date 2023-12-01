@@ -29,10 +29,13 @@ async function run() {
 
     const usersCollection = db.collection('users');
     const contestCollection = db.collection('contests');
+
+
     
-    app.use(express.json());
+    // -----------------------------------------
+    //************** MIDDLEWARES****************
+    // -----------------------------------------
     
-    // AUTHENTICATION
     
     // generate a new token
     app.post('/jwt', async (req, res) => {
@@ -64,8 +67,61 @@ async function run() {
       });
     };
 
-        // Controller
-        const contestController = {
+
+    // Verify the role
+    const verifyRole = (...roles) => {
+      return async (req, res, next) => {
+        const email = req.decoded.email;
+    
+        const user = await User.findOne({ email });
+    
+        if (user && roles.includes(user.role)) {
+          next();
+        } else {
+          res.status(403).json({ message: "You don't have permission to access" });
+        }
+      };
+    };
+
+    // -----------------------------------------
+    //************** CONTROLLERS****************
+    // -----------------------------------------
+
+    // Auth Controller
+    const authController = {
+      createToken: async (req, res) => {
+        const user = req.body;
+        console.log("I need a new jwt", user);
+        const token = jwt.sign(user, process.env.JWT_SECRET, {
+          expiresIn: process.env.JWT_EXPIRES_IN,
+        });
+        res
+          .cookie("token", token, {
+            httpOnly: true,
+            secure: true,
+            sameSite: "none",
+          })
+          .send({ success: true });
+      },
+    
+      logout: async (req, res) => {
+        try {
+          res
+            .clearCookie("token", {
+              maxAge: 0,
+              secure: process.env.NODE_ENV === "production",
+              sameSite: process.env.NODE_ENV === "production" ? "none" : "strict",
+            })
+            .send({ success: true });
+          console.log("Logout successful");
+        } catch (err) {
+          res.status(500).send(err);
+        }
+      },
+    };
+
+    // Contest Controller
+    const contestController = {
           getAllContests: async (req, res) => {
               try {
                 const searchText = req.query.search || "";
@@ -184,13 +240,22 @@ async function run() {
                 res.status(500).json({ error: error.message });
               }
             },
-          }
-    
-          app.get('/contests/', contestController.getAllContests);
-          app.get('/contests/:id', contestController.getContestById);
-          app.get('/contests/popular', contestController.getPopularContests);
-          app.get('/contests/admin', verifyToken, contestController.getAllContestsForAdmin);
-          app.get('/contests/creator/:creatorId',  contestController.getContestByCreator);
+      }
+
+          
+    // -----------------------------------------
+    //************** ROUTERS ****************
+    // -----------------------------------------
+    // Authentication Routes
+    app.post("/auth/jwt", authController.createToken);
+    app.get("/auth/logout", authController.logout);
+
+    // Contest Routes
+    app.get('/contests/', contestController.getAllContests);
+    app.get('/contests/:id', contestController.getContestById);
+    app.get('/contests/popular', contestController.getPopularContests);
+    app.get('/contests/admin', verifyToken, contestController.getAllContestsForAdmin);
+    app.get('/contests/creator/:creatorId',  contestController.getContestByCreator);
     
 
 
