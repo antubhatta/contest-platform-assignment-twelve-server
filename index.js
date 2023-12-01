@@ -36,16 +36,6 @@ async function run() {
     //************** MIDDLEWARES****************
     // -----------------------------------------
     
-    
-    // generate a new token
-    app.post('/jwt', async (req, res) => {
-      const body = req.body;
-      const token = jwt.sign(body, process.env.JWT_SECRET, {
-        expiresIn: '1h',
-      });
-      res.send({ token });
-    });
-    
     // verify the token
     const verifyToken = (req, res, next) => {
       if (!req.headers.authorization) {
@@ -118,6 +108,50 @@ async function run() {
           res.status(500).send(err);
         }
       },
+    };
+
+    const userController = {
+      getAllUsers: async (req, res) => {
+        try {
+          const page = req.query.page * 1 || 1;
+          const limit = req.query.limit * 1 || 10;
+          const skip = (page - 1) * limit;
+    
+          const users = await usersCollection.find({}).skip(skip).limit(limit).toArray();
+          const total = await usersCollection.countDocuments();
+          res.send({ users, count: total });
+        } catch (error) {
+          res.send(error);
+        }
+      },
+    
+      getUserByEmail: async (req, res) => {
+        const email = req.params.email;
+        const result = await usersCollection.findOne({ email });
+        res.send(result);
+      },
+    
+      createUser: async (req, res) => {
+        const email = req.params.email;
+        const user = req.body;
+        const query = { email: email };
+        const isExist = await usersCollection.findOne(query);
+    
+        console.log("User found?----->", isExist);
+    
+        if (isExist) return res.send(isExist);
+    
+        const result = await usersCollection.insertOne(user);
+        res.send(result.ops[0]);
+      },
+    
+      updateUser: async (req, res) => {
+        const id = req.params.id;
+        const user = req.body;
+        const result = await usersCollection.updateOne({ _id: ObjectId(id) }, { $set: user });
+        res.send(result);
+      },
+    
     };
 
     // Contest Controller
@@ -250,12 +284,18 @@ async function run() {
     app.post("/auth/jwt", authController.createToken);
     app.get("/auth/logout", authController.logout);
 
+    // Users Routes
+    app.get("/users/:email", userController.getUserByEmail);
+    app.post("/users/:email", userController.createUser);
+    app.patch("/users/:id",verifyRole("admin"), userController.updateUser);
+    app.get("/users", verifyRole("admin"), userController.getAllUsers);
+
     // Contest Routes
     app.get('/contests/', contestController.getAllContests);
     app.get('/contests/:id', contestController.getContestById);
     app.get('/contests/popular', contestController.getPopularContests);
-    app.get('/contests/admin', verifyToken, contestController.getAllContestsForAdmin);
-    app.get('/contests/creator/:creatorId',  contestController.getContestByCreator);
+    app.get('/contests/admin', verifyRole('admin'), verifyToken, contestController.getAllContestsForAdmin);
+    app.get('/contests/creator/:creatorId', verifyRole('admin', 'creator'),  contestController.getContestByCreator);
     
 
 
