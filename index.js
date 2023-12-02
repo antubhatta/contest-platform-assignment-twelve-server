@@ -274,6 +274,304 @@ async function run() {
                 res.status(500).json({ error: error.message });
               }
             },
+
+            
+    getBestCreatorByPrizeMoney: async (req, res) => {
+      try {
+        const result = await contestCollection.aggregate([
+          {
+            $match: { status: "accepted" },
+          },
+          {
+            $group: {
+              _id: "$creator",
+              bestContest: { $first: "$$ROOT" }, // Retrieve the first contest for each creator
+              totalPrizeMoney: { $sum: "$prizeMoney" },
+            },
+          },
+          {
+            $lookup: {
+              from: "users",
+              localField: "_id",
+              foreignField: "_id",
+              as: "creator",
+            },
+          },
+          {
+            $unwind: "$creator",
+          },
+          {
+            $project: {
+              _id: 0,
+              creator: "$creator.name",
+              image: "$creator.image",
+              email: "$creator.email",
+              bestContest: "$bestContest", // Include the details of the best contest
+              totalPrizeMoney: 1,
+            },
+          },
+          {
+            $sort: { totalPrizeMoney: -1 },
+          },
+          {
+            $limit: 5, // Limit the result to the top 5 creators with their best contests
+          },
+        ]).toArray();
+  
+        res.status(200).json(result);
+      } catch (error) {
+        res.status(500).json({ error: error.message });
+      }
+    },
+  
+    getRegisteredContest: async (req, res) => {
+      try {
+        const email = req.decoded.email;
+        const user = await usersCollection.findOne({ email });
+  
+        if (!user || user.role !== "user") {
+          return res
+            .status(403)
+            .send({ message: "Access Denied: Insufficient Permission" });
+        }
+  
+        const result = await contestCollection.find({ participants: user._id }).toArray();
+        res.status(200).json(result);
+      } catch (error) {
+        res.status(500).json({ error: error.message });
+      }
+    },
+  
+    getWinningContest: async (req, res) => {
+      try {
+        const email = req.decoded.email;
+        const user = await usersCollection.findOne({ email });
+  
+        if (!user || user.role !== "user") {
+          return res
+            .status(403)
+            .send({ message: "Access Denied: Insufficient Permission" });
+        }
+  
+        const result = await contestCollection.find({ winner: user._id }).toArray();
+        res.status(200).json(result);
+      } catch (error) {
+        res.status(500).json({ error: error.message });
+      }
+    },
+  
+    getContestByCreator: async (req, res) => {
+      const id = req.params.creatorId;
+      const email = req.decoded.email;
+  
+      const page = req.query.page * 1 || 1;
+      const limit = req.query.limit * 1 || 10;
+      const skip = (page - 1) * limit;
+  
+      try {
+        const creator = await usersCollection.findOne({ email });
+  
+        if (
+          !creator ||
+          creator._id.toString() !== id ||
+          creator.role !== "creator"
+        ) {
+          return res
+            .status(403)
+            .send({ message: "Access Denied: Insufficient Permission" });
+        }
+  
+        const result = await contestCollection.find({ creator: id }).skip(skip).limit(limit).toArray();
+        const total = await contestCollection.countDocuments({ creator: id });
+  
+        res.send({ contests: result, count: total });
+      } catch (error) {
+        res.status(500).json({ error: error.message });
+      }
+    },
+  
+    getAllContestsForAdmin: async (req, res) => {
+      const page = req.query.page * 1 || 1;
+      const limit = req.query.limit * 1 || 10;
+      const skip = (page - 1) * limit;
+  
+      try {
+        const result = await contestCollection.find({})
+          .skip(skip)
+          .limit(limit)
+          .toArray();
+  
+        const total = await contestCollection.countDocuments();
+  
+        res.send({ result, count: total });
+      } catch (error) {
+        console.log(error);
+        res.status(500).json({ error: error.message });
+      }
+    },
+  
+    createContest: async (req, res) => {
+      try {
+        const contest = req.body;
+  
+        const creator = await usersCollection.findOne({ _id: contest.creator, role: "creator" });
+        if (!creator) {
+          return res
+            .status(403)
+            .send({ message: "Access Denied: Insufficient Permission" });
+        }
+  
+        const credits = creator?.credits || 0;
+  
+        if (credits < 50) {
+          return res.status(400).send({ message: "Insufficient credits" });
+        }
+  
+        // deduct 50 credits from the creator
+        creator.credits = credits - 50;
+        await usersCollection.updateOne({ _id: creator._id }, { $set: { credits: creator.credits } });
+  
+        const result = await contestCollection.insertOne(contest);
+  
+        res.status(201).send(result.ops[0]);
+      } catch (error) {
+        res.status(500).json({ error: error.message });
+      }
+    },
+  
+    addParticipant: async (req, res) => {
+      const contestId = req.params.contestId;
+      const userId = req.params.userId;
+  
+      try {
+        const contest = await contestCollection.findOne({ _id: toObjectId(contestId) });
+        if (!contest) {
+          return res.status(404).send({ message: "Contest not found" });
+        }
+  
+        // check if the participant is already added
+        const isParticipant = contest.participants.includes(userId);
+        if (isParticipant) {
+          return res.status(400).send({ message: "Participant already added" });
+        }
+  
+        // added the participant
+        await contestCollection.updateOne({ _id: contest._id }, { $push: { participants: userId } });
+  
+        res.status(200).send({ message: "Participant added successfully" });
+      } catch (error) {
+        res.status(500).json({ error: error.message });
+      }
+    },
+
+    declareWinner: async (req, res) => {
+      const contestId = req.params.contestId;
+      const email = req.decoded.email;
+  
+      try {
+        const contest = await contestCollection.findOne({ _id: toObjectId(contestId) });
+        if (!contest) {
+          return res.status(404).send({ message: "Contest not found" });
+        }
+  
+        // check if the contest is created by the creator
+        if (contest.creator.toString() !== email) {
+          return res.status(403).send({ message: "Access denied" });
+        }
+  
+        // check if the contest is not closed yet
+        if (contest.deadline > new Date()) {
+          return res.status(400).send({ message: "Contest is not close yet" });
+        }
+  
+        // check if the winner is already declared
+        if (contest.winner) {
+          return res.status(400).send({ message: "Winner already declared" });
+        }
+  
+        // declare the winner
+        await contestCollection.updateOne({ _id: contest._id }, { $set: { winner: req.body.winner } });
+  
+        res.status(200).send({ message: "Participant added successfully" });
+      } catch (error) {
+        res.status(500).json({ error: error.message });
+      }
+    },
+  
+    updateContest: async (req, res) => {
+      const id = req.params.id;
+      const contest = req.body;
+      const result = await contestCollection.updateOne({ _id: toObjectId(id) }, { $set: contest });
+      res.send(result);
+    },
+  
+    deleteContest: async (req, res) => {
+      const id = req.params.id;
+      const result = await contestCollection.deleteOne({ _id: toObjectId(id) });
+      res.send(result);
+    },
+    getWinners: async (req, res) => {
+      try {
+        const contests = await contestCollection.find({
+          status: "accepted",
+          winner: { $ne: null },
+        }).toArray();
+  
+        const winners = contests.map((contest) => {
+          return {
+            title: contest.title,
+            image: contest.image,
+            winner: contest.winner,
+            prizeMoney: contest.prizeMoney,
+            participantCount: contest?.participants?.length,
+          };
+        });
+  
+        res.status(200).json(winners);
+      } catch (error) {
+        console.log(error);
+        res.status(500).json({ error: error.message });
+      }
+    },
+    getUserStats: async (req, res) => {
+      const email = req.decoded?.email;
+    
+      if (!email) {
+        return res.status(401).send({ message: 'Unauthorized access' });
+      }
+    
+      try {
+        const user = await userCollection.findOne({ email }, { _id: 1 });
+        if (!user) {
+          return res.status(404).send({ message: 'User not found' });
+        }
+    
+        const contests = await contestCollection.find({
+          participants: user._id,
+          status: 'accepted',
+        });
+    
+        const winningContests = contests.filter(
+          (contest) => contest.winner?.toString() === user._id.toString()
+        ) || [];
+    
+        const stats = {
+          totalContests: contests.length,
+          totalFee: contests.reduce((acc, curr) => acc + curr.entryFee, 0),
+          totalPrizeMoney: winningContests.reduce(
+            (acc, curr) => acc + curr.prizeMoney,
+            0
+          ),
+          totalWinningContests: winningContests.length,
+        };
+    
+        res.status(200).send(stats);
+      } catch (error) {
+        console.log(error);
+        res.status(500).send(error);
+      }
+    },
+
       }
 
           
@@ -296,9 +594,15 @@ async function run() {
     app.get('/contests/popular', contestController.getPopularContests);
     app.get('/contests/admin', verifyRole('admin'), verifyToken, contestController.getAllContestsForAdmin);
     app.get('/contests/creator/:creatorId', verifyRole('admin', 'creator'),  contestController.getContestByCreator);
-    
-
-
+    app.get('/contests/best-creator', contestController.getBestCreatorByPrizeMoney);
+    app.post('/contests/', verifyToken, contestController.createContest);
+    app.get('/contests/registered', verifyToken, contestController.getRegisteredContest);
+    app.get('/contests/winning', contestController.getWinningContest);
+    app.patch('/contests/:id', verifyRole('creator', 'admin'), contestController.updateContest);
+    app.delete('/contests/:id', verifyRole('creator', 'admin'), contestController.deleteContest);
+    app.patch('/contests/:contestId/winner', verifyRole('creator'), contestController.declareWinner);
+    app.get('/contests/winners', contestController.getWinners);
+    app.get('/contests/user-stats', contestController.getUserStats);
 
     
 
