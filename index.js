@@ -11,7 +11,7 @@ const app = express();
 
 // middleware
 const corsOptions = {
-  origin: ["http://localhost:5173", "http://localhost:5174"],
+  origin: ["http://localhost:5173", "https://win-wave-12.firebaseapp.com", "https://win-wave-12.web.app"],
   credentials: true,
   optionSuccessStatus: 200,
 };
@@ -32,7 +32,7 @@ const client = new MongoClient(uri, {
 async function run() {
   try {
     // Connect the client to the server	(optional starting in v4.7)
-    await client.connect();
+    // await client.connect();
 
     const db = client.db("contestDB");
 
@@ -134,14 +134,10 @@ async function run() {
     const userController = {
       getAllUsers: async (req, res) => {
         try {
-          const page = req.query.page * 1 || 1;
-          const limit = req.query.limit * 1 || 10;
-          const skip = (page - 1) * limit;
+
 
           const users = await usersCollection
             .find({})
-            .skip(skip)
-            .limit(limit)
             .toArray();
           const total = await usersCollection.countDocuments();
           res.send({ users, count: total });
@@ -311,44 +307,40 @@ async function run() {
           const result = await contestCollection
             .aggregate([
               {
-                $match: { status: "accepted" },
-              },
-              {
-                $group: {
-                  _id: "$creator",
-                  bestContest: { $first: "$$ROOT" }, // Retrieve the first contest for each creator
-                  totalPrizeMoney: { $sum: "$prizeMoney" },
+                $match: {
+                  status: "accepted",
                 },
-              },
-              {
-                $lookup: {
-                  from: "users",
-                  localField: "_id",
-                  foreignField: "_id",
-                  as: "creator",
-                },
-              },
-              {
-                $unwind: "$creator",
               },
               {
                 $project: {
-                  _id: 0,
-                  creator: "$creator.name",
-                  image: "$creator.image",
-                  email: "$creator.email",
-                  bestContest: "$bestContest", // Include the details of the best contest
-                  totalPrizeMoney: 1,
+                  title: 1,
+                  type: 1,
+                  creator: 1,
+                  image: 1,
+                  description: 1,
+                  creatorInfo: 1,
+                  participantsCount: {
+                    $size: { $ifNull: ["$participants", []] },
+                  },
                 },
               },
               {
-                $sort: { totalPrizeMoney: -1 },
+                $sort: { participantsCount: -1 },
               },
-              {
-                $limit: 5, // Limit the result to the top 5 creators with their best contests
-              },
+              { $limit: 5 },
             ])
             .toArray();
+
+          const creators = result.map(async (contest) => {
+            const creator = await usersCollection.findOne({
+              _id: new ObjectId(contest.creator),
+            });
+
+
+            contest.creatorInfo = creator;
+          });
+
+          await Promise.all(creators);
 
           res.status(200).json(result);
         } catch (error) {
@@ -360,8 +352,6 @@ async function run() {
         try {
           const email = req.decoded.email;
           const user = await usersCollection.findOne({ email });
-
-          console.log(user);
 
           if (!user || user.role !== "user") {
             return res
@@ -394,7 +384,7 @@ async function run() {
           }
 
           const result = await contestCollection
-            .find({ winner: user._id })
+            .find({ winner: user._id.toString() })
             .toArray();
           res.status(200).json(result);
         } catch (error) {
@@ -422,14 +412,10 @@ async function run() {
 
       getAllContestsForAdmin: async (req, res) => {
         try {
-          const page = req.query.page * 1 || 1;
-          const limit = req.query.limit * 1 || 10;
-          const skip = (page - 1) * limit;
+
 
           const result = await contestCollection
             .find({})
-            .skip(skip)
-            .limit(limit)
             .toArray();
 
           const total = await contestCollection.countDocuments();
@@ -557,24 +543,45 @@ async function run() {
 
       getWinners: async (req, res) => {
         try {
-          const contests = await contestCollection
-            .find({
-              status: "accepted",
-              winner: { $ne: null },
-            })
+          const result = await contestCollection
+            .aggregate([
+              {
+                $match: {
+                  status: "accepted",
+                  winner: { $ne: null },
+                },
+              },
+              {
+                $project: {
+                  title: 1,
+                  type: 1,
+                  winner: 1,
+                  image: 1,
+                  description: 1,
+                  creatorInfo: 1,
+                  participantsCount: {
+                    $size: { $ifNull: ["$participants", []] },
+                  },
+                },
+              },
+              {
+                $sort: { participantsCount: -1 },
+              },
+              { $limit: 5 },
+            ])
             .toArray();
 
-          const winners = contests.map((contest) => {
-            return {
-              title: contest.title,
-              image: contest.image,
-              winner: contest.winner,
-              prizeMoney: contest.prizeMoney,
-              participantCount: contest?.participants?.length,
-            };
+          const creators = result.map(async (contest) => {
+            const creator = await usersCollection.findOne({
+              _id: new ObjectId(contest.winner),
+            });
+
+            contest.winnerInfo = creator;
           });
 
-          res.status(200).json(winners);
+          await Promise.all(creators);
+
+          res.status(200).json(result);
         } catch (error) {
           console.log(error);
           res.status(500).json({ error: error.message });
@@ -591,35 +598,35 @@ async function run() {
               {
                 $group: {
                   _id: "$winner",
-                  totalPrizeMoney: { $sum: "$prizeMoney" },
+                  // totalPrizeMoney: { $sum: "$prizeMoney" },
                 },
               },
-              {
-                $lookup: {
-                  from: "users",
-                  localField: "_id",
-                  foreignField: "_id",
-                  as: "winner",
-                },
-              },
-              {
-                $unwind: "$winner",
-              },
-              {
-                $project: {
-                  _id: 0,
-                  winner: "$winner.name",
-                  image: "$winner.image",
-                  email: "$winner.email",
-                  totalPrizeMoney: 1,
-                },
-              },
-              {
-                $sort: { totalPrizeMoney: -1 },
-              },
-              {
-                $limit: 20,
-              },
+              // {
+              //   $lookup: {
+              //     from: "users",
+              //     localField: "winner",
+              //     foreignField: "_id",
+              //     as: "winner",
+              //   },
+              // },
+              // {
+              //   $unwind: "$winner",
+              // },
+              // {
+              //   $project: {
+              //     _id: 0,
+              //     winner: "$winner.name",
+              //     image: "$winner.image",
+              //     email: "$winner.email",
+              //     totalPrizeMoney: 1,
+              //   },
+              // },
+              // {
+              //   $sort: { totalPrizeMoney: -1 },
+              // },
+              // {
+              //   $limit: 20,
+              // },
             ])
             .toArray();
 
