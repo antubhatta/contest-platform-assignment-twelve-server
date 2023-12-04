@@ -208,7 +208,9 @@ async function run() {
                   type: 1,
                   image: 1,
                   description: 1,
-                  // participantsCount: { $size: "$participants" },
+                  participantsCount: {
+                    $size: { $ifNull: ["$participants", []] },
+                  },
                 },
               },
             ])
@@ -244,7 +246,6 @@ async function run() {
           res.status(500).send(error);
         }
       },
-
       getContestByIdForCreators: async (req, res) => {
         const contestId = req.params.contestId;
         const creatorId = req.params.creatorId;
@@ -253,47 +254,22 @@ async function run() {
           const contest = await contestCollection.findOne({
             _id: new ObjectId(contestId),
           });
-          const creator = await usersCollection.findOne({
-            _id: new ObjectId(creatorId),
-          });
 
-          if (!contest) {
-            return res.status(404).send({ message: "Contest not found" });
-          }
-
-          // Check if the logged-in user is the creator of the contest
-          if (contest.creator.toString() !== creatorId) {
-            return res.status(403).send({ message: "Access denied" });
-          }
-
-          const tasks = await taskCollection
-            .find({ contestId: contestId })
-            .toArray();
-
-          const participantsWithTasks = contest.participants.map(
-            (participant) => {
-              const participantTask = tasks.find((task) =>
-                task.participantId.equals(participant)
-              );
-
-              return {
-                _id: participant,
-                name: participantTask ? participantTask.task : null,
-              };
-            }
+          const usersPromises = contest.participants.map(
+            async (pId) =>
+              await usersCollection.findOne({ _id: new ObjectId(pId) })
           );
 
-          const formattedContest = {
-            _id: contest._id,
-            title: contest.title,
-            description: contest.description,
-            deadline: contest.deadline,
-            prizeMoney: contest.prizeMoney,
-            winner: contest.winner,
-            participants: participantsWithTasks,
-          };
+          const winner = await usersCollection.findOne({
+            _id: new ObjectId(contest.winner),
+          });
 
-          res.status(200).send(formattedContest);
+          const users = await Promise.all(usersPromises);
+
+          contest.participants = users;
+          contest.winner = winner;
+
+          res.status(200).send(contest);
         } catch (error) {
           res
             .status(500)
@@ -312,13 +288,15 @@ async function run() {
                   type: 1,
                   image: 1,
                   description: 1,
-                  participantsCount: { $size: "$participants" },
+                  participantsCount: {
+                    $size: { $ifNull: ["$participants", []] },
+                  },
                 },
               },
               {
                 $sort: { participantsCount: -1 },
               },
-              { $limit: 6 },
+              { $limit: 5 },
             ])
             .toArray();
 
@@ -535,11 +513,6 @@ async function run() {
             return res.status(404).send({ message: "Contest not found" });
           }
 
-          // check if the contest is created by the creator
-          if (contest.creator.toString() !== email) {
-            return res.status(403).send({ message: "Access denied" });
-          }
-
           // check if the contest is not closed yet
           if (contest.deadline > new Date()) {
             return res
@@ -558,7 +531,7 @@ async function run() {
             { $set: { winner: req.body.winner } }
           );
 
-          res.status(200).send({ message: "Participant added successfully" });
+          res.status(200).send({ message: "winner declared successfully" });
         } catch (error) {
           res.status(500).json({ error: error.message });
         }
@@ -713,8 +686,9 @@ async function run() {
 
           const task = await taskCollection.findOne({
             contestId,
-            participantId: participant._id,
           });
+
+          console.log(task);
 
           res.status(200).json(task);
         } catch (error) {
@@ -815,7 +789,11 @@ async function run() {
       "/contests/:contestId/creator/:creatorId",
       contestController.getContestByIdForCreators
     );
-    app.patch("/contests/:contestId/winner", contestController.declareWinner);
+    app.patch(
+      "/contests/:contestId/winner",
+      verifyToken,
+      contestController.declareWinner
+    );
     app.patch(
       "/contests/:contestId/participant/:userId",
       contestController.addParticipant
